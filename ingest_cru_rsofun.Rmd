@@ -8,8 +8,18 @@ output:
 ---
 
 ```{r setup, include=FALSE}
+library(tidyverse)
 library(ingestr)
 library(rbeni)
+library(rsofun)
+```
+
+## Meta info
+
+```{r}
+df_sites <- siteinfo_fluxnet2015 %>% 
+  dplyr::filter(sitename == "CH-Lae") %>% 
+  mutate(year_start = 1901, year_end = 2018)
 ```
 
 
@@ -64,7 +74,137 @@ df_forcing <- df_forcing_cru %>%
   left_join(df_forcing_watch %>% dplyr::select(date, ppfd), by = "date") %>% 
   mutate(doy = yday(date)) %>% 
   left_join(df_msc, by = "doy") %>% 
-  mutate(ppfd = ifelse(is.na(ppfd), ppfd_msc, ppfd))
+  mutate(ppfd = ifelse(is.na(ppfd), ppfd_msc, ppfd)) %>% 
+  
+  ## add standard atmospheric pressure corrected by elevation
+  mutate(patm = calc_patm(elv = df_sites$elv[1])) %>%   ## warning: taking ch-lae
+  
+  ## assume precip is snow when temp is below 1 deg
+  mutate(snowf = ifelse(temp < 1, prec, 0),
+         rainf = ifelse(temp >= 1, prec, 0))
 
 saveRDS(df_forcing, file = "data/df_forcing.rds")
 ```
+
+
+### fAPAR forcing
+
+```{r}
+df_fapar <- ingest(
+  siteinfo  = df_sites,
+  source    = "fapar_unity"
+  )
+```
+
+### CO2 forcing
+
+Ingesting CO2 data is particularly simple. We can safely assume it's well mixed in the atmosphere (independent of site location), and we can use a annual mean value for all days in respective years.
+
+```{r}
+df_co2 <- ingestr::ingest(
+  df_sites,
+  source  = "co2_mlo",
+  verbose = FALSE
+  )
+```
+
+## Simulation settings
+
+```{r}
+params_siml <- list(
+  spinup             = TRUE,      # to bring soil moisture to steady state
+  spinupyears        = 10,        # number of spinup years. 10 is enough for soil moisture.
+  recycle            = 1,         # number of years recycled during spinup 
+  soilmstress        = FALSE,     # boolean for whether soil moisture stress function is included
+  tempstress         = TRUE,      # boolean for whether temperature stress function is included
+  calc_aet_fapar_vpd = FALSE,     # set to FALSE - should be dropped again
+  in_ppfd            = TRUE,      # if available from forcing files, set to TRUE
+  in_netrad          = FALSE,     # if available from forcing files, set to TRUE
+  outdt              = 1,
+  ltre               = FALSE,
+  ltne               = FALSE,
+  ltrd               = FALSE,
+  ltnd               = FALSE,
+  lgr3               = TRUE,
+  lgn3               = FALSE,
+  lgr4               = FALSE
+  )
+```
+
+<!-- Run `prepare_setup_sofun()` to define the simulation settings that contain all the information specified by the two steps above (meta info, and simulation parameters), global simulation parameters are wrapped inside an additional column `params_siml`, added to the site meta info dataframe. -->
+
+<!-- ```{r} -->
+
+<!-- siteinfo <- prepare_setup_sofun(siteinfo = siteinfo, params_siml = params_siml) -->
+
+<!-- ``` -->
+
+## Model parameters
+
+```{r}
+params_modl <- list(
+  kphio           = 0.09423773,
+  soilm_par_a     = 0.33349283,
+  soilm_par_b     = 1.45602286
+  )
+```
+
+## Soil parameters
+
+```{r}
+df_soiltexture <- bind_rows(
+  top    = tibble(layer = "top",    fsand = 0.4, fclay = 0.3, forg = 0.1, fgravel = 0.1),
+  bottom = tibble(layer = "bottom", fsand = 0.4, fclay = 0.3, forg = 0.1, fgravel = 0.1)
+)
+```
+
+## Collect all drivers
+
+```{r}
+df_drivers <- collect_drivers_sofun( 
+  siteinfo       = df_sites,
+  params_siml    = params_siml,
+  meteo          = df_forcing %>% mutate(sitename = "CH-Lae") %>% group_by(sitename) %>% nest(), 
+  fapar          = df_fapar,
+  co2            = df_co2,
+  df_soiltexture = df_soiltexture
+  )
+df_drivers
+```
+
+## Run model
+
+```{r}
+df_output <- runread_pmodel_f(
+     df_drivers,
+     params_modl = params_modl, 
+     makecheck = TRUE,
+     parallel = FALSE
+     ) %>% 
+  unnest(data)
+
+saveRDS(df_output, file = "data/df_output.rds")
+```
+
+
+## Process and visualise
+
+```{r}
+df_output %>% 
+  mutate(year = year(date), chi_wgt = chi * gpp) %>% 
+  group_by(year) %>% 
+  summarise(chi_wgt = sum(chi_wgt), gpp = sum(gpp)) %>% 
+  mutate(chi = chi_wgt / gpp) %>% 
+  ggplot(aes(year, chi)) +
+  geom_line()
+
+df_output %>% 
+  mutate(year = year(date), iwue_wgt = iwue * gpp) %>% 
+  group_by(year) %>% 
+  summarise(iwue_wgt = sum(iwue_wgt), gpp = sum(gpp)) %>% 
+  mutate(iwue = iwue_wgt / gpp) %>% 
+  ggplot(aes(year, iwue)) +
+  geom_line()
+```
+
+
