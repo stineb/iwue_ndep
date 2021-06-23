@@ -1,0 +1,70 @@
+---
+title: "CRU climate forcing ingest for running rsofun"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+library(ingestr)
+library(rbeni)
+```
+
+
+## Climate forcing
+
+See vignette in ingestr for testing against station data CH-Lae.
+
+Get CRU data and bias-correct. Bias correction based on high-resolution WorldClim 1970-2000 monthly climatology is available for variables temp, prec, and vpd.
+```{r message=FALSE}
+## get daily data (with temporal downscaling)
+df_forcing_cru <- ingest_bysite(
+  sitename  = "CH-Lae",
+  source    = "cru",
+  getvars   = c("temp", "prec", "vpd", "ccov"),
+  dir       = "~/data/cru/ts_4.05/",
+  timescale = "d",
+  year_start = 1901,
+  year_end  = 2018,
+  lon       = 8.365,
+  lat       = 47.4781,
+  verbose   = FALSE,
+  settings  = list(correct_bias = "worldclim", dir_bias = "~/data/worldclim")
+  )
+```
+
+Get PPFD from WATCH-WFDEI and assume a means seasonal cycle for year before 1979.
+```{r}
+df_forcing_watch <- ingest_bysite(
+  sitename  = "CH-Lae",
+  source    = "watch_wfdei",
+  getvars   = c("ppfd"),
+  dir       = "~/data/watch_wfdei/",
+  timescale = "d",
+  year_start = 1979,
+  year_end  = 2018,
+  lon       = 8.365,
+  lat       = 47.4781,
+  verbose   = TRUE,
+  settings  = list(correct_bias = "worldclim", dir_bias = "~/data/worldclim")
+  )
+df_watch
+```
+
+Combine
+```{r}
+df_msc <- df_forcing_watch %>% 
+  mutate(doy = yday(date)) %>% 
+  group_by(doy) %>% 
+  summarise(ppfd_msc = mean(ppfd, na.rm = TRUE))
+
+df_forcing <- df_forcing_cru %>% 
+  left_join(df_forcing_watch %>% dplyr::select(date, ppfd), by = "date") %>% 
+  mutate(doy = yday(date)) %>% 
+  left_join(df_msc, by = "doy") %>% 
+  mutate(ppfd = ifelse(is.na(ppfd), ppfd_msc, ppfd))
+
+saveRDS(df_forcing, file = "data/df_forcing.rds")
+```
