@@ -18,7 +18,7 @@ library(rsofun)
 
 ```{r}
 df_sites <- siteinfo_fluxnet2015 %>% 
-  dplyr::filter(sitename == "CH-Lae") %>% 
+  dplyr::filter(sitename %in% c("CH-Lae", "CH-Dav")) %>% 
   mutate(year_start = 1901, year_end = 2018)
 ```
 
@@ -30,60 +30,72 @@ See vignette in ingestr for testing against station data CH-Lae.
 Get CRU data and bias-correct. Bias correction based on high-resolution WorldClim 1970-2000 monthly climatology is available for variables temp, prec, and vpd.
 ```{r message=FALSE}
 ## get daily data (with temporal downscaling)
-df_forcing_cru <- ingest_bysite(
-  sitename  = "CH-Lae",
+df_forcing_cru <- ingest(
+  df_sites,
   source    = "cru",
   getvars   = c("temp", "prec", "vpd", "ccov"),
   dir       = "~/data/cru/ts_4.05/",
   timescale = "d",
-  year_start = 1901,
-  year_end  = 2018,
-  lon       = 8.365,
-  lat       = 47.4781,
-  verbose   = FALSE,
   settings  = list(correct_bias = "worldclim", dir_bias = "~/data/worldclim")
   )
+
+# df_forcing_cru$data[[1]] %>% 
+#   ggplot(aes(date, vpd)) +
+#   geom_line()
 ```
 
 Get PPFD from WATCH-WFDEI and assume a means seasonal cycle for year before 1979.
 ```{r}
-df_forcing_watch <- ingest_bysite(
-  sitename  = "CH-Lae",
+df_forcing_watch <- ingest(
+  df_sites %>% mutate(year_start = 1979),
   source    = "watch_wfdei",
   getvars   = c("ppfd"),
   dir       = "~/data/watch_wfdei/",
   timescale = "d",
-  year_start = 1979,
-  year_end  = 2018,
-  lon       = 8.365,
-  lat       = 47.4781,
-  verbose   = TRUE,
   settings  = list(correct_bias = "worldclim", dir_bias = "~/data/worldclim")
   )
-df_watch
 ```
 
-Combine
+Combine. For pre-1979 years, take mean seasonal cycle for PPFD. For all years, use means seasonal cycle for CCOV (cloud cover fraction).
 ```{r}
-df_msc <- df_forcing_watch %>% 
-  mutate(doy = yday(date)) %>% 
-  group_by(doy) %>% 
-  summarise(ppfd_msc = mean(ppfd, na.rm = TRUE))
+filn <- "data/df_forcing.rds"
+if (!file.exists(filn)){
+  df_msc_watch <- df_forcing_watch %>% 
+    unnest(data) %>% 
+    mutate(doy = yday(date)) %>% 
+    group_by(sitename, doy) %>% 
+    summarise(ppfd_msc = mean(ppfd, na.rm = TRUE))
 
-df_forcing <- df_forcing_cru %>% 
-  left_join(df_forcing_watch %>% dplyr::select(date, ppfd), by = "date") %>% 
-  mutate(doy = yday(date)) %>% 
-  left_join(df_msc, by = "doy") %>% 
-  mutate(ppfd = ifelse(is.na(ppfd), ppfd_msc, ppfd)) %>% 
+  df_msc_cru <- df_forcing_cru %>% 
+    unnest(data) %>% 
+    mutate(doy = yday(date)) %>% 
+    group_by(sitename, doy) %>% 
+    summarise(ccov_msc = mean(ccov, na.rm = TRUE))
   
-  ## add standard atmospheric pressure corrected by elevation
-  mutate(patm = calc_patm(elv = df_sites$elv[1])) %>%   ## warning: taking ch-lae
+  df_forcing <- df_forcing_cru %>% 
+    unnest(data) %>% 
+    left_join(df_forcing_watch %>% unnest(data) %>% dplyr::select(sitename, date, ppfd), by = c("sitename", "date")) %>% 
+    mutate(doy = yday(date)) %>% 
+    left_join(df_msc_watch, by = c("sitename", "doy")) %>% 
+    left_join(df_msc_cru, by = c("sitename", "doy")) %>% 
+    mutate(ppfd = ifelse(is.na(ppfd), ppfd_msc, ppfd)) %>% 
+    
+    ## add standard atmospheric pressure corrected by elevation
+    left_join(df_sites %>% dplyr::select(sitename, elv), by = "sitename") %>% 
+    mutate(patm = calc_patm(elv = elv)) %>%
+    
+    ## assume precip is snow when temp is below 1 deg
+    mutate(snow = ifelse(temp < 1, prec, 0),
+           rain = ifelse(temp >= 1, prec, 0)) %>% 
+    
+    ## overwrite cloud cover with mean seasonal cycle
+    mutate(ccov = ccov_msc)
   
-  ## assume precip is snow when temp is below 1 deg
-  mutate(snowf = ifelse(temp < 1, prec, 0),
-         rainf = ifelse(temp >= 1, prec, 0))
-
-saveRDS(df_forcing, file = "data/df_forcing.rds")
+  saveRDS(df_forcing, file = filn)
+    
+} else {
+  df_forcing <- readRDS(filn)
+}
 ```
 
 
@@ -103,8 +115,8 @@ Ingesting CO2 data is particularly simple. We can safely assume it's well mixed 
 ```{r}
 df_co2 <- ingestr::ingest(
   df_sites,
-  source  = "co2_mlo",
-  verbose = FALSE
+  source  = "co2_cmip",
+  dir = "~/data/co2"
   )
 ```
 
@@ -164,7 +176,7 @@ df_soiltexture <- bind_rows(
 df_drivers <- collect_drivers_sofun( 
   siteinfo       = df_sites,
   params_siml    = params_siml,
-  meteo          = df_forcing %>% mutate(sitename = "CH-Lae") %>% group_by(sitename) %>% nest(), 
+  meteo          = df_forcing %>% group_by(sitename) %>% nest(), 
   fapar          = df_fapar,
   co2            = df_co2,
   df_soiltexture = df_soiltexture
@@ -192,18 +204,18 @@ saveRDS(df_output, file = "data/df_output.rds")
 ```{r}
 df_output %>% 
   mutate(year = year(date), chi_wgt = chi * gpp) %>% 
-  group_by(year) %>% 
+  group_by(sitename, year) %>% 
   summarise(chi_wgt = sum(chi_wgt), gpp = sum(gpp)) %>% 
   mutate(chi = chi_wgt / gpp) %>% 
-  ggplot(aes(year, chi)) +
+  ggplot(aes(x = year, y = chi, color = sitename)) +
   geom_line()
 
 df_output %>% 
   mutate(year = year(date), iwue_wgt = iwue * gpp) %>% 
-  group_by(year) %>% 
+  group_by(sitename, year) %>% 
   summarise(iwue_wgt = sum(iwue_wgt), gpp = sum(gpp)) %>% 
   mutate(iwue = iwue_wgt / gpp) %>% 
-  ggplot(aes(year, iwue)) +
+  ggplot(aes(x = year, y = iwue, color = sitename)) +
   geom_line()
 ```
 
