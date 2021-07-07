@@ -28,7 +28,7 @@ df_sites <- siteinfo_fluxnet2015 %>%
 See vignette in ingestr for testing against station data CH-Lae.
 
 Get CRU data and bias-correct. Bias correction based on high-resolution WorldClim 1970-2000 monthly climatology is available for variables temp, prec, and vpd.
-```{r message=FALSE}
+```{r message=FALSE, eval=FALSE}
 ## get daily data (with temporal downscaling)
 df_forcing_cru <- ingest(
   df_sites,
@@ -45,7 +45,7 @@ df_forcing_cru <- ingest(
 ```
 
 Get PPFD from WATCH-WFDEI and assume a means seasonal cycle for year before 1979.
-```{r}
+```{r, eval=FALSE}
 df_forcing_watch <- ingest(
   df_sites %>% mutate(year_start = 1979),
   source    = "watch_wfdei",
