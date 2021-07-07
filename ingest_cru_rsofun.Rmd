@@ -198,6 +198,11 @@ df_output <- runread_pmodel_f(
 saveRDS(df_output, file = "data/df_output.rds")
 ```
 
+Reformat
+```{r}
+df_output <- readRDS("data/df_output.rds")
+write_csv(df_output, file = "data/df_output.csv")
+```
 
 ## Process and visualise
 
