@@ -1,0 +1,44 @@
+---
+title: "N deposition data ingest"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ingestr)
+```
+
+## Meta info
+
+```{r}
+df_sites <- read_csv("data/Coordinates.csv") %>% 
+  rename(lon = Longitude, lat = Latitude, sitename = Site) %>% 
+  mutate(year_start = 1900, year_end = 2005)
+```
+
+
+## Get data
+
+```{r message=FALSE, eval=FALSE}
+df_ndep <- ingest(
+  df_sites,
+  source    = "ndep",
+  dir       = "~/data/ndep_lamarque/",
+  timescale = "y"
+  )
+
+df_ndep %>% 
+  unnest(data) %>% 
+  write_csv("data/ndep_iwuesites_lamarque.csv")
+
+# df_ndep$data[[1]] %>% 
+#   ggplot(aes(date, vpd)) +
+#   geom_line()
+```
+
+
+
